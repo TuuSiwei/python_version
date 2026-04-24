@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 
 final/
+*.json
 *.jsonl
 *.wav
 *.rttm
