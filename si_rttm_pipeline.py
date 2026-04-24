@@ -349,7 +349,7 @@ def build_conversation_outputs(
 
     audio_out.parent.mkdir(parents=True, exist_ok=True)
     rttm_out.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(audio_out), mixed, sample_rate, subtype="FLOAT", format="WAV")
+    sf.write(str(audio_out), mixed, sample_rate, subtype="PCM_16", format="WAV")
     with open(rttm_out, "w", encoding="utf-8") as f:
         for _start, _speaker, rttm in rttm_rows:
             f.write(rttm + "\n")
