@@ -54,6 +54,7 @@ class SiRttmParams:
     download_concurrency: int
     process_concurrency: int
     max_shards: int
+    async_upload: bool
     start_from_conversation: int | None
     stop_after_conversation_count: int | None
     window_sec: float
@@ -97,6 +98,21 @@ class DatasetBuildResult:
     skipped_short: int
     skipped_no_valid: int
     skipped_records: list[dict[str, Any]]
+
+
+@dataclass
+class UploadFinalizeJob:
+    chunk_index: int
+    config_name: str
+    chunk_dir: Path
+    start_index: int
+    end_index: int
+    input_count: int
+    processed_count: int
+    failed_count: int
+    skipped_count: int
+    dataset_rows: int
+    dataset: Any
 
 
 def now_iso() -> str:
@@ -767,6 +783,41 @@ def push_dataset(dataset: Any, params: SiRttmParams, config_name: str) -> None:
         )
 
 
+async def upload_and_finalize(job: UploadFinalizeJob, params: SiRttmParams) -> None:
+    uploaded = False
+    cleaned = False
+    try:
+        if job.dataset_rows > 0:
+            await asyncio.to_thread(push_dataset, job.dataset, params, job.config_name)
+        else:
+            print(f"Chunk {job.chunk_index} has no dataset rows; no config will be pushed.")
+        uploaded = True
+        shutil.rmtree(job.chunk_dir, ignore_errors=True)
+        cleaned = True
+        print(f"Cleaned staging directory: {job.chunk_dir}")
+    finally:
+        if uploaded:
+            progress = load_progress()
+            upsert_chunk_progress(
+                progress,
+                ChunkProgress(
+                    chunk_index=job.chunk_index,
+                    config_name=job.config_name if job.dataset_rows > 0 else None,
+                    start_index=job.start_index,
+                    end_index=job.end_index,
+                    input_count=job.input_count,
+                    processed_count=job.processed_count,
+                    failed_count=job.failed_count,
+                    skipped_count=job.skipped_count,
+                    dataset_rows=job.dataset_rows,
+                    uploaded=uploaded,
+                    cleaned=cleaned,
+                    timestamp=now_iso(),
+                ),
+            )
+            save_progress(progress)
+
+
 async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
     ensure_dirs()
     all_jobs = load_conversation_jobs()
@@ -787,7 +838,10 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
         f"chunk_size={params.chunk_size}, download_concurrency={params.download_concurrency}, "
         f"process_concurrency={params.process_concurrency}"
     )
-    print(f"repo_id={params.repo_id}, config_prefix={params.config_prefix}, upload={params.upload}")
+    print(
+        f"repo_id={params.repo_id}, config_prefix={params.config_prefix}, "
+        f"upload={params.upload}, async_upload={params.async_upload}"
+    )
 
     progress = load_progress()
     remote_names = remote_config_names(params.repo_id) if params.upload else set()
@@ -795,6 +849,14 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
     processed_chunks = 0
     chunk_starts = list(range(start, end, params.chunk_size))
     total_chunks = len(chunk_starts)
+    pending_upload: asyncio.Task[None] | None = None
+
+    async def wait_pending_upload() -> None:
+        nonlocal pending_upload
+        if pending_upload is None:
+            return
+        await pending_upload
+        pending_upload = None
 
     for chunk_number, chunk_start in enumerate(chunk_starts, start=1):
         chunk_end = min(chunk_start + params.chunk_size, end)
@@ -829,6 +891,13 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
             total_chunks=total_chunks,
         )
 
+        if params.upload and params.async_upload:
+            print(
+                f"Chunk {chunk_number}/{total_chunks} finished download/mix; "
+                "waiting for previous upload before building this chunk dataset..."
+            )
+            await wait_pending_upload()
+
         failed = [r for r in results if r.status != "ok"]
         append_jsonl(
             FAILED_LOG,
@@ -857,42 +926,34 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
             f"skipped_short={build.skipped_short}, skipped_no_valid={build.skipped_no_valid}"
         )
 
-        if params.upload and build.rows > 0:
-            push_dataset(build.dataset, params, config_name)
-            uploaded = True
-        elif params.upload and build.rows == 0:
-            print(f"Chunk {chunk_index} has no dataset rows; no config will be pushed.")
-            uploaded = True
+        upload_job = UploadFinalizeJob(
+            chunk_index=chunk_index,
+            config_name=config_name,
+            chunk_dir=chunk_dir,
+            start_index=chunk_start,
+            end_index=chunk_end,
+            input_count=len(chunk_jobs),
+            processed_count=ok_count,
+            failed_count=len(failed),
+            skipped_count=build.skipped_short + build.skipped_no_valid,
+            dataset_rows=build.rows,
+            dataset=build.dataset,
+        )
+
+        if params.upload and params.async_upload:
+            print(
+                f"Starting background upload for chunk {chunk_number}/{total_chunks} "
+                f"config={config_name}; next chunk can start downloading/mixing."
+            )
+            pending_upload = asyncio.create_task(upload_and_finalize(upload_job, params))
+        elif params.upload:
+            await upload_and_finalize(upload_job, params)
         else:
             print(f"--no-upload set; keeping staging directory: {chunk_dir}")
-            uploaded = False
-
-        cleaned = False
-        if uploaded:
-            shutil.rmtree(chunk_dir, ignore_errors=True)
-            cleaned = True
-            print(f"Cleaned staging directory: {chunk_dir}")
-
-        if uploaded:
-            progress = load_progress()
-            upsert_chunk_progress(
-                progress,
-                ChunkProgress(
-                    chunk_index=chunk_index,
-                    config_name=config_name if build.rows > 0 else None,
-                    start_index=chunk_start,
-                    end_index=chunk_end,
-                    input_count=len(chunk_jobs),
-                    processed_count=ok_count,
-                    failed_count=len(failed),
-                    skipped_count=build.skipped_short + build.skipped_no_valid,
-                    dataset_rows=build.rows,
-                    uploaded=uploaded,
-                    cleaned=cleaned,
-                    timestamp=now_iso(),
-                ),
-            )
-            save_progress(progress)
         processed_chunks += 1
+
+    if params.upload and params.async_upload:
+        print("Waiting for final background upload to finish...")
+        await wait_pending_upload()
 
     print(f"\nDone. processed_chunks={processed_chunks}")

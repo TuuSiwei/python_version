@@ -41,6 +41,7 @@ def _cmd_download_transform(args: argparse.Namespace) -> int:
         download_concurrency=args.download_concurrency,
         process_concurrency=args.process_concurrency,
         max_shards=args.max_shards,
+        async_upload=not args.no_async_upload,
         start_from_conversation=args.start_from_conversation,
         stop_after_conversation_count=args.stop_after_conversation_count,
         window_sec=args.window_sec,
@@ -69,6 +70,11 @@ def main() -> int:
     p_dt.add_argument("--download-concurrency", type=int, default=64)
     p_dt.add_argument("--process-concurrency", type=int, default=16)
     p_dt.add_argument("--max-shards", type=int, default=128)
+    p_dt.add_argument(
+        "--no-async-upload",
+        action="store_true",
+        help="Upload each chunk synchronously before processing the next chunk",
+    )
     p_dt.add_argument("--start-from-conversation", type=int, default=None)
     p_dt.add_argument("--stop-after-conversation-count", type=int, default=None)
     p_dt.add_argument("--no-upload", action="store_true", help="Build locally without pushing to HF")

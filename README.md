@@ -47,6 +47,7 @@ python main.py download-transform
 - `--download-concurrency 64`
 - `--process-concurrency 16`
 - `--max-shards 128`
+- 默认异步上传：上传当前 chunk 时会继续下载/混音下一 chunk
 - `--window-sec 90`
 - `--shift-sec 8`
 - `--max-spks 4`
@@ -77,6 +78,12 @@ python main.py download-transform --start-from-conversation 5000
 上传成功的批次会自动删除 staging 目录；上传失败或使用 `--no-upload` 时会保留，方便检查或重试。
 
 运行日志会显示当前 5000-conversation 批次的进度，例如 `Chunk 2/13`，并在组内每完成一个 conversation 后输出 `1234/5000 24.68%`。
+
+如需恢复旧的串行行为（上传完成后再处理下一批），可添加：
+
+```bash
+python main.py download-transform --no-async-upload
+```
 
 ## RTTM 规则
 

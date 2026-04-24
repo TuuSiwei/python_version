@@ -4,3 +4,4 @@ __pycache__/
 final/
 *.jsonl
 *.wav
+*.rttm
