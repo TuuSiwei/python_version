@@ -76,6 +76,8 @@ python main.py download-transform --start-from-conversation 5000
 
 上传成功的批次会自动删除 staging 目录；上传失败或使用 `--no-upload` 时会保留，方便检查或重试。
 
+运行日志会显示当前 5000-conversation 批次的进度，例如 `Chunk 2/13`，并在组内每完成一个 conversation 后输出 `1234/5000 24.68%`。
+
 ## RTTM 规则
 
 每个原始 jsonl 非空行生成一行 RTTM，使用顶层 `start/end`，speaker 字段为 `participant_id`：

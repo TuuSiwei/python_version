@@ -405,6 +405,8 @@ async def process_chunk(
     jobs: list[ConversationJob],
     chunk_dir: Path,
     params: SiRttmParams,
+    chunk_number: int,
+    total_chunks: int,
 ) -> list[ConversationResult]:
     chunk_dir.mkdir(parents=True, exist_ok=True)
     (chunk_dir / "audio").mkdir(parents=True, exist_ok=True)
@@ -414,6 +416,11 @@ async def process_chunk(
     process_sem = asyncio.Semaphore(max(1, params.process_concurrency))
     queue: asyncio.Queue[ConversationJob | None] = asyncio.Queue()
     results: list[ConversationResult] = []
+    progress_lock = asyncio.Lock()
+    completed_count = 0
+    ok_count = 0
+    failed_count = 0
+    total_jobs = len(jobs)
 
     for job in jobs:
         queue.put_nowait(job)
@@ -441,13 +448,30 @@ async def process_chunk(
                         job,
                     )
                     elapsed = time.perf_counter() - started
+                    async with progress_lock:
+                        nonlocal completed_count, ok_count, failed_count
+                        completed_count += 1
+                        if result.status == "ok":
+                            ok_count += 1
+                        else:
+                            failed_count += 1
+                        pct = (completed_count / total_jobs * 100.0) if total_jobs else 100.0
+                        prefix = (
+                            f"[chunk {chunk_number}/{total_chunks} "
+                            f"{completed_count}/{total_jobs} {pct:.2f}% "
+                            f"ok={ok_count} failed={failed_count}]"
+                        )
+
                     if result.status == "ok":
                         print(
-                            f"[worker {worker_id}] {job.conversation_id} ok "
+                            f"{prefix} [worker {worker_id}] {job.conversation_id} ok "
                             f"({result.duration:.1f}s, rttm={result.rttm_lines}, {elapsed:.1f}s)"
                         )
                     else:
-                        print(f"[worker {worker_id}] {job.conversation_id} failed: {result.error}")
+                        print(
+                            f"{prefix} [worker {worker_id}] "
+                            f"{job.conversation_id} failed: {result.error}"
+                        )
                     results.append(result)
                 finally:
                     queue.task_done()
@@ -769,8 +793,10 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
     remote_names = remote_config_names(params.repo_id) if params.upload else set()
     used_indices = used_config_indices(progress, params.config_prefix, remote_names)
     processed_chunks = 0
+    chunk_starts = list(range(start, end, params.chunk_size))
+    total_chunks = len(chunk_starts)
 
-    for chunk_start in range(start, end, params.chunk_size):
+    for chunk_number, chunk_start in enumerate(chunk_starts, start=1):
         chunk_end = min(chunk_start + params.chunk_size, end)
         chunk_jobs = all_jobs[chunk_start:chunk_end]
         chunk_index = chunk_start // params.chunk_size
@@ -779,7 +805,8 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
         completed = find_completed_chunk(progress, chunk_start, chunk_end)
         if completed:
             print(
-                f"Skip completed chunk {chunk_index}: "
+                f"Skip completed chunk {chunk_number}/{total_chunks} "
+                f"(global chunk {chunk_index}): "
                 f"[{chunk_start}, {chunk_end}) config={completed.get('config_name')}"
             )
             continue
@@ -790,10 +817,17 @@ async def run_si_rttm_pipeline(params: SiRttmParams) -> None:
         )
 
         print(
-            f"\n=== Chunk {chunk_index}: [{chunk_start}, {chunk_end}) "
+            f"\n=== Chunk {chunk_number}/{total_chunks} "
+            f"(global chunk {chunk_index}): [{chunk_start}, {chunk_end}) "
             f"config={config_name}, conversations={len(chunk_jobs)} ==="
         )
-        results = await process_chunk(chunk_jobs, chunk_dir, params)
+        results = await process_chunk(
+            chunk_jobs,
+            chunk_dir,
+            params,
+            chunk_number=chunk_number,
+            total_chunks=total_chunks,
+        )
 
         failed = [r for r in results if r.status != "ok"]
         append_jsonl(
