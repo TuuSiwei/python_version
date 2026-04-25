@@ -64,7 +64,7 @@ def main() -> int:
         "download-transform",
         help="Download SI conversations -> mixed 48 kHz WAV + RTTM -> HF Dataset configs",
     )
-    p_dt.add_argument("--repo-id", default="humanify/real_dia_dataset")
+    p_dt.add_argument("--repo-id", default="tsw0411/si_next")
     p_dt.add_argument("--config-prefix", default="si")
     p_dt.add_argument("--chunk-size", type=int, default=5000)
     p_dt.add_argument("--download-concurrency", type=int, default=64)
